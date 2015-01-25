@@ -1,0 +1,235 @@
+---
+title: "Practical Machine Learning Project"
+output: html_document
+---
+
+**Summary:** The aim of the project was to construct a machine learning algorithm which recognises which way (i.e. one 'correct' and 4 different 'incorrect' ways) barbell lifts excercises are performed. There was one variable (`classe`) which should be predicted and many, many possible predictors. Since there were almost 20k observations in the dataset I choose the simplest solution: to divide the data into 3 sets: training (60%), validation (20%) and test set (20%). I decided to check two algorithms: random forrest and SVM. They were trained on training dataset and checked on validation data. After this I concluded that random forrest should probably perform better slightly better on new data. This was confirmed on the test dataset.
+
+```{r setoptions, echo=FALSE, warning=FALSE, message=FALSE}
+library(knitr)
+opts_chunk$set(warning=FALSE, message=FALSE)
+```
+
+*Disclaimer: Since I don't know how to count words here and even which sets of characters should be counted as 'words' please don't punish me if this report does not meet the required 2k words requirement. I try to give as little description as needed and most of the code is commented so it should not be hard to follow my actions.*
+
+### Data reading
+
+```{r}
+library(caret)
+library(randomForest)
+library(ggplot2)
+library(e1071) # for SVM
+
+# reading data
+df <- read.csv("../../data/pml-training.csv")
+df <- df[,-1] # remove first column (row numbers)
+dim(df)
+```
+
+As we can see there are almost 20k thousand records and 159 variables.
+
+### Excluding data for final testing
+
+```{r}
+set.seed(10) # setting seed for replication
+
+### divide data for training and testing
+inTrain <- createDataPartition(y=df$classe, p=0.8, list=FALSE)
+train1 <- df[as.vector(inTrain),] # used for training and validation
+test <- df[-as.vector(inTrain),] # used only for final testing
+```
+
+For further analysis only `train1` data will be used.
+
+### Cleaning the data
+
+Firstly, after visual inspection of the data (I will spare the details) I concluded that there are many strange values (such as "#DIV/0!"), so I inspected factor variables with less than 10 levels.
+
+```{r}
+### data cleaning
+# some factors should be numeric and some should probably be removed
+
+# take all factor columns with levels less than 10
+min.factors <- sapply(train1, function(x) length(levels(x))>0 & length(levels(x))<10)
+summary(df[min.factors]) # no. 1, 2 and the last one should be left, the rest can be removed
+```
+
+And removed some of them:
+
+```{r}
+# remove columns with no values
+rem1 <- which(min.factors)[-c(1,2,12)] # columns removed #1
+train2 <- train1[-rem1]
+```
+
+After that I checked which of the factor variables should be numeric (sorry for the long result):
+
+```{r}
+# checking which variables should be numeric
+all.factors <- sapply(train2, is.factor) # take all factor columns left
+summary(train2[all.factors]) # 1,2,3 and last should stay as they are, the rest should be numeric
+```
+
+And decided to take all but first three variables (and the last one of course) and converse them into numeric:
+
+```{r}
+# take indices of columns that should be numeric
+f2num <- which(all.factors)[-c(1,2,3,sum(all.factors))] 
+
+# change factors to numbers
+for(i in f2num){
+    train2[,i] <- as.numeric(as.character(train2[,i]))
+}
+```
+
+Then I checked how many complete data are in the dataset.
+
+```{r}
+# checking number of complete cases
+sum(complete.cases(train2))
+```
+
+Sometimes missing data can give some clue:
+
+```{r}
+# are classes dependant on complete cases?
+table(train2[,150])
+table(train2[complete.cases(train2),150]) # rather not
+```
+
+But not this time.
+
+Let's see which variables contain missing data:
+
+```{r}
+# how many missing values are in each column
+as.data.frame(sapply(train1, function(x) sum(is.na(x)))) # looks like most of the values won't be helpful
+
+```
+
+It looks like many variables can be removed.
+
+```{r}
+most.na <- sapply(train2, function(x) sum(is.na(x))>1)
+rem2 <- which(most.na) # columns removed #2
+train3 <- train2[-rem2]
+sum(complete.cases(train3)) # all data are complete
+```
+
+The last thing was to remove 6 first variables which (after visual inspection) should not be considered as proper predictors.
+
+```{r}
+# removing first 6 columns which are not important
+rem3 <- 1:6
+train4 <- train3[-rem3]
+```
+
+### Train and validation set
+
+The dataset was then divided into two sets: `train` (75% of the `train1` dataset so it gives 60% of the original dataset) and `valid`.
+
+```{r}
+### divide training data for model training and validation
+inTrain2 <- createDataPartition(y=train4$classe, p=0.75, list=FALSE) # p==0.75 because only 80% of the original data were left
+train <- train4[as.vector(inTrain2),] # used for training
+valid <- train4[-as.vector(inTrain2),] # used for validation
+```
+
+### Random forrest
+
+First model tested was random forest with default settings. At first I considered **caret** library for this but it took more than 2 hours to converge so for this report I used basic function in the **randomForest** library.
+
+```{r cache=TRUE}
+### random forest
+model1 <- randomForest(classe ~., data=train, importance=TRUE)
+model1
+```
+
+The results on the training set are pretty impressive. Random forest allows to see which predictors are most important, so let's see:
+
+```{r}
+varImpPlot(model1)
+```
+
+The most important variables are `yaw_belt` and `roll_belt` (no idea what it means). Let's see these two variables on the plot:
+
+```{r}
+qplot(yaw_belt, roll_belt, data=train, fill=classe, shape=I(21), size=I(3), alpha=I(0.3))
+```
+
+Looks interesting.
+
+Now let's take some of the least important variable and see if there are differences  between these two plots:
+
+```{r}
+qplot(accel_forearm_x, accel_dumbbell_x, data=train, fill=classe, shape=I(21), size=I(3), alpha=I(0.5))
+```
+
+Well, there are. The second plot is much more 'messy'. 
+
+OK, let's check how this model performs on validation data:
+
+```{r}
+y1 <- predict(model1, newdata=valid)
+confusionMatrix(y1, valid$classe)
+```
+
+Looks very promissing, its accuracy is more than 99%.
+
+### SVM
+
+The second algorithm I tried was SVM. I have to confess that I made some earlier calculation and used function `tune()` to find the parameters which should give nice results.
+
+```{r cache=TRUE}
+### support vector machines
+# I've made some preliminary testing to choose the best combinaation of parameters
+model2 <- svm(classe~., data=train, kernel="polynomial", cost=100, degree=4, scale=F, probability=TRUE)
+confusionMatrix(model2$fitted, train$classe)
+```
+
+And the results are indeed spectacular: no mistakes on training data. 
+
+What about validation dataset?
+
+```{r}
+y2 <- predict(model2, newdata=valid, probability=TRUE)
+confusionMatrix(y2, valid$classe)
+```
+
+Not bad at at all, but there are some mistakes. And overall the accuracy of the second model is a little worse than the first one.
+
+**Conclusion:** Random forest model should perform better if new data appear.
+
+### Model testing
+
+Lucky me, I have some new data. Now it is time to use the `test` dataset which was excluded in the beginning.
+
+We should not forget that many variables were removed in the training dataset. If we want to use this new data we have to perform the same operations:
+
+```{r}
+# repeating the 'data cleaning' operations
+test1 <- test[-rem1]
+for(i in f2num){
+    test1[,i] <- as.numeric(as.character(test1[,i]))
+}
+test1 <- test1[-rem2]
+test1 <- test1[-rem3]
+```
+
+Prediction results for model1 (RF):
+
+```{r}
+# testing model1 (RF)
+z1 <- predict(model1, newdata=test1)
+confusionMatrix(z1, test1$classe)
+```
+
+Prediction results for model2 (SVM):
+
+```{r}
+# testing model2 (SVM)
+z2 <- predict(model2, newdata=test1)
+confusionMatrix(z2, test1$classe)
+```
+
+The first model is slightly better. Additionally each correct excercises ('A') were classified correctly here. But to be honest, in my opinion both models perform extremely good on this data.
